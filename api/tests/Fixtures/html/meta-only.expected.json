@@ -1,0 +1,12 @@
+{
+  "url": "https://games.example.org/switch-oled",
+  "method": "meta",
+  "fields": {
+    "title": "Nintendo Switch OLED Model - White",
+    "brand": "Nintendo",
+    "image_url": "https://cdn.example.org/switch.jpg",
+    "price": "349.99",
+    "currency": "USD",
+    "availability": "in stock"
+  }
+}

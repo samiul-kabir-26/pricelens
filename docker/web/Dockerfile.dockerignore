@@ -1,0 +1,12 @@
+# Context is the repo root; only web/ sources are needed.
+**
+!web/
+web/node_modules
+web/.next
+web/out
+web/test-results
+web/playwright-report
+web/.env
+web/.env.*
+!web/.env.example
+web/*.tsbuildinfo

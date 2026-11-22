@@ -1,0 +1,21 @@
+{
+  "url": "https://shop.example.com/p/sony-wh-1000xm5-black",
+  "method": "json_ld",
+  "fields": {
+    "title": "Sony WH-1000XM5 Wireless Noise Cancelling Headphones - Black",
+    "brand": "Sony",
+    "gtin": "0027242923782",
+    "mpn": "WH1000XM5/B",
+    "sku": "EX-88231",
+    "image_url": "https://shop.example.com/img/xm5.jpg",
+    "price": "329.99",
+    "list_price": "399.99",
+    "currency": "USD",
+    "availability": "https://schema.org/InStock",
+    "condition": "https://schema.org/NewCondition",
+    "seller_name": "Example Electronics",
+    "shipping_price": "0",
+    "rating": 4.7,
+    "review_count": 1289
+  }
+}

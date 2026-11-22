@@ -1,0 +1,237 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  PHP_VERSION: "8.4"
+
+jobs:
+  api:
+    name: API (Pint, Larastan, Pest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: gd, intl, zip, pcntl, redis, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('api/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --ansi
+
+      - name: Lint (Pint)
+        run: composer lint
+
+      - name: Static analysis (Larastan)
+        run: composer analyse
+
+      - name: Tests (Pest, incl. extractor golden fixtures)
+        run: composer test
+
+  renderer:
+    name: Renderer (tsc, Vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: renderer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: renderer/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Tests (Vitest, real Chromium)
+        run: npx vitest run
+
+  web:
+    name: Web (ESLint, tsc, Vitest, build, Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests (Vitest)
+        run: npx vitest run
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E (Playwright)
+        run: npx playwright test
+        env:
+          CI: "true"
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  openapi-lint:
+    name: OpenAPI lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Redocly lint
+        run: npx --yes @redocly/cli@1.34.5 lint openapi.yaml
+
+  ops:
+    name: Ops tooling (shellcheck, promtool, fixture farm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.10.0 \
+            scripts/deploy.sh load/provision-sources.sh
+
+      - name: promtool check config + rules
+        run: |
+          docker run --rm --entrypoint /bin/sh --tmpfs /etc/prometheus/secrets:mode=1777 \
+            -v "$PWD/docker/observability:/obs:ro" prom/prometheus:v3.15.1 -c '
+              printf unset > /etc/prometheus/secrets/metrics_token &&
+              cp /obs/alerts.yml /etc/prometheus/alerts.yml &&
+              promtool check config /obs/prometheus.yml &&
+              promtool check rules /obs/alerts.yml'
+
+      - name: Fixture farm generates and nginx config is valid
+        run: docker build -t pricelens/fixture-farm:ci load/fixture-farm
+
+  images:
+    name: Image ${{ matrix.image.name }}
+    needs: [api, renderer, web, openapi-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: api
+            dockerfile: docker/php/Dockerfile
+          - name: nginx
+            dockerfile: docker/nginx/Dockerfile
+          - name: renderer
+            dockerfile: docker/renderer/Dockerfile
+          - name: web
+            dockerfile: docker/web/Dockerfile
+    env:
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/pricelens-${{ matrix.image.name }}
+          # IMAGE_TAG for scripts/deploy.sh is the full commit SHA.
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable=${{ env.PUSH == 'true' }}
+
+      - name: Build${{ env.PUSH == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Only the web image uses these (NEXT_PUBLIC_* are baked in at build time); others ignore unknown args.
+          build-args: |
+            NEXT_PUBLIC_REVERB_HOST=${{ vars.REVERB_PUBLIC_HOST }}
+            NEXT_PUBLIC_REVERB_KEY=${{ vars.REVERB_APP_KEY }}
+            NEXT_PUBLIC_REVERB_PORT=443
+            NEXT_PUBLIC_REVERB_SCHEME=https
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}

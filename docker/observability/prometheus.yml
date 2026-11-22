@@ -1,0 +1,52 @@
+# Prometheus for the PriceLens compose stack (docker-compose.observability.yml).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: pricelens
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# No Alertmanager in the compose overlay: alerts show on http://localhost:9090/alerts and in Grafana.
+# Point this at your Alertmanager to route them:
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Laravel /metrics through nginx (the local nginx serves it on :80 for any Host). When PRICELENS_METRICS_TOKEN
+  # is set, the entrypoint in docker-compose.observability.yml writes it to /etc/prometheus/secrets/metrics_token.
+  # An empty file sends "Authorization: Bearer " (empty credentials), which an unprotected /metrics ignores.
+  - job_name: pricelens-api
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics_token
+    static_configs:
+      - targets: ["nginx:80"]
+        labels:
+          service: pricelens-api
+
+  # Renderer pool / request metrics. Docker DNS round-robins across replicas; use dns_sd_configs to scrape each.
+  - job_name: pricelens-renderer
+    dns_sd_configs:
+      - names: ["renderer"]
+        type: A
+        port: 3100
+    relabel_configs:
+      - target_label: service
+        replacement: pricelens-renderer
+
+  # OpenTelemetry Collector's own telemetry (spans received/exported/refused).
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels:
+          service: otel-collector
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

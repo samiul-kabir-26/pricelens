@@ -1,0 +1,101 @@
+# PriceLens alert rules (spec §17 Observability → Alerts).
+groups:
+  - name: pricelens-availability
+    rules:
+      - alert: PriceLensApiDown
+        expr: up{job="pricelens-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PriceLens API /metrics is unreachable
+          description: Prometheus could not scrape {{ $labels.instance }} for 2 minutes (nginx or php-fpm down, or a metrics token mismatch).
+
+      - alert: PriceLensApiMetricsAbsent
+        expr: absent(up{job="pricelens-api"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No PriceLens API scrape target
+          description: The pricelens-api scrape job has no targets.
+
+      - alert: PriceLensRendererDown
+        expr: count(up{job="pricelens-renderer"} == 1) == 0 or absent(up{job="pricelens-renderer"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: No PriceLens renderer instance is up
+          description: Rendered fetches will fail or queue up on the render queue.
+
+  - name: pricelens-pipeline
+    rules:
+      - alert: PriceLensQueueWaitHigh
+        expr: max by (queue) (pricelens_queue_wait_seconds) > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} wait is {{ $value | humanizeDuration }}"
+          description: Jobs on {{ $labels.queue }} wait more than 60 s before a worker picks them up. Scale horizon or check for a stuck supervisor.
+
+      - alert: PriceLensRenderPoolSaturated
+        expr: avg(pricelens_render_pool_utilization) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Render pool utilization {{ $value | humanizePercentage }} for 5 minutes
+          description: Browser contexts are nearly all busy. Add renderer replicas or raise CONTEXTS_PER_INSTANCE.
+
+      # Extraction success = succeeded / (succeeded + failed + blocked) extract tasks over 15 minutes, all tenants.
+      # pricelens_tasks_total counts finished tasks only; skipped_* and cancelled are not extraction outcomes.
+      # Only fires with at least 20 such tasks in the window, so a quiet system doesn't page.
+      - alert: PriceLensExtractionSuccessLow
+        expr: |
+          (
+            sum(increase(pricelens_tasks_total{stage="extract", status="succeeded"}[15m]))
+            /
+            sum(increase(pricelens_tasks_total{stage="extract", status=~"succeeded|failed|blocked"}[15m]))
+          ) < 0.7
+          and
+          sum(increase(pricelens_tasks_total{stage="extract", status=~"succeeded|failed|blocked"}[15m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Global extraction success is {{ $value | humanizePercentage }} (15 min)
+          description: Less than 70 % of extract tasks succeeded across all tenants. Check source health, block rates and recent adapter/extractor changes.
+
+      - alert: PriceLensWebhookFailureSpike
+        expr: |
+          (
+            sum(rate(pricelens_webhook_deliveries_total{status="failed"}[10m]))
+            /
+            sum(rate(pricelens_webhook_deliveries_total[10m]))
+          ) > 0.25
+          and
+          sum(increase(pricelens_webhook_deliveries_total[10m])) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of webhook deliveries are failing"
+          description: More than 25 % of webhook deliveries failed over 10 minutes. A tenant endpoint may be down; endpoints are auto-disabled after repeated failures.
+
+      - alert: PriceLensSearchFailureRateHigh
+        expr: |
+          (
+            sum(rate(pricelens_search_duration_seconds_count{status="failed"}[15m]))
+            /
+            sum(rate(pricelens_search_duration_seconds_count[15m]))
+          ) > 0.2
+          and
+          sum(increase(pricelens_search_duration_seconds_count[15m])) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of searches end in failed"
+          description: More than 20 % of finished searches failed over 15 minutes.

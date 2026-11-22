@@ -1,0 +1,25 @@
+{
+  "url": "https://shop.example.com/p/sony-wh-1000xm5",
+  "source_config": {
+    "product": {
+      "title": "h1.product-title",
+      "price": "[data-testid=price-current]",
+      "list_price": "[data-testid=price-was]",
+      "currency": {"static": "USD"},
+      "availability": ".stock-status",
+      "gtin": {"selector": "script[type='application/ld+json']", "json_path": "$.gtin13"},
+      "image": "meta[property='og:image']@content",
+      "price_regex": "([0-9.,]+)"
+    }
+  },
+  "method": "selector",
+  "fields": {
+    "title": "Sony WH-1000XM5 Headphones (Black)",
+    "gtin": "0027242923782",
+    "price": "329.99",
+    "list_price": "399.99",
+    "currency": "USD",
+    "availability": "Only 3 left in stock",
+    "image_url": "https://shop.example.com/img/xm5-og.jpg"
+  }
+}

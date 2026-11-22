@@ -1,0 +1,51 @@
+# Production overrides:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# MySQL and Redis are managed services in production: point DB_HOST / REDIS_HOST at them and scale those
+# containers to 0 (or remove them with a profile). Storage moves to S3.
+x-prod-env: &prod-env
+  APP_ENV: production
+  APP_DEBUG: "false"
+  FILESYSTEM_DISK: s3
+  DB_HOST: ${DB_HOST:?managed MySQL host}
+  REDIS_HOST: ${REDIS_HOST:?managed Redis host}
+  REVERB_SCALING_ENABLED: "true"
+  PHP_OPCACHE_VALIDATE_TIMESTAMPS: 0
+  SENTRY_LARAVEL_DSN: ${SENTRY_LARAVEL_DSN:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+services:
+  nginx:
+    build:
+      args:
+        NGINX_CONF: prod.conf
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_DIR:?path to certs}:/etc/nginx/certs:ro
+
+  api:
+    environment: *prod-env
+    deploy: { replicas: 2 }
+  horizon:
+    environment: *prod-env
+  scheduler:
+    environment: *prod-env
+    deploy: { replicas: 1 }
+  reverb:
+    environment: *prod-env
+  renderer:
+    deploy: { replicas: 2 }
+    environment:
+      BROWSER_INSTANCES: 4
+      CONTEXTS_PER_INSTANCE: 4
+  web:
+    build:
+      args:
+        NEXT_PUBLIC_REVERB_HOST: ${REVERB_PUBLIC_HOST:-ws.pricelens.example}
+        NEXT_PUBLIC_REVERB_PORT: 443
+        NEXT_PUBLIC_REVERB_SCHEME: https
+    deploy: { replicas: 2 }
+  mysql:
+    deploy: { replicas: 0 }
+  redis:
+    deploy: { replicas: 0 }

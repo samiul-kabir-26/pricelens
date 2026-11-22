@@ -1,0 +1,14 @@
+{
+  "url": "https://store.example.net/phone-x?variant=256",
+  "method": "json_ld",
+  "fields": {
+    "title": "Acme Phone X 256GB Black",
+    "brand": "Acme",
+    "sku": "X-256",
+    "price": 899,
+    "currency": "EUR",
+    "availability": "InStock",
+    "canonical_url": "https://store.example.net/phone-x?variant=256",
+    "variant_attributes": {"color": "Black"}
+  }
+}

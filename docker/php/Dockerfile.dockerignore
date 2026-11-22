@@ -1,0 +1,10 @@
+*
+!api/**
+api/vendor
+api/node_modules
+api/.env
+api/storage/logs/*
+api/storage/framework/**/*
+api/storage/app/**/*
+api/database/database.sqlite
+!docker/php/**

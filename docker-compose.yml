@@ -1,0 +1,181 @@
+# PriceLens local stack. Copy .env.example → .env, then:
+#   docker compose up -d --build
+#   docker compose run --rm migrate          # migrations + seed (prints the demo API key)
+# UI: http://localhost:8080   API: http://localhost:8080/api/v1   Horizon: http://localhost:8080/horizon
+
+x-api-env: &api-env
+  APP_NAME: PriceLens
+  APP_ENV: ${APP_ENV:-local}
+  APP_DEBUG: ${APP_DEBUG:-false}
+  APP_KEY: ${APP_KEY:?set APP_KEY (php artisan key:generate --show)}
+  APP_URL: ${APP_URL:-http://localhost:8080}
+  LOG_CHANNEL: stderr
+  LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_DATABASE: pricelens
+  DB_USERNAME: pricelens
+  DB_PASSWORD: ${DB_PASSWORD:-pricelens}
+  REDIS_CLIENT: phpredis
+  REDIS_HOST: redis
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  SESSION_DRIVER: redis
+  PENNANT_STORE: array
+  FILESYSTEM_DISK: ${FILESYSTEM_DISK:-local}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+  AWS_BUCKET: ${AWS_BUCKET:-pricelens}
+  AWS_ENDPOINT: ${AWS_ENDPOINT:-}
+  AWS_USE_PATH_STYLE_ENDPOINT: ${AWS_USE_PATH_STYLE_ENDPOINT:-true}
+  BROADCAST_CONNECTION: reverb
+  REVERB_APP_ID: ${REVERB_APP_ID:-pricelens}
+  REVERB_APP_KEY: ${REVERB_APP_KEY:?set REVERB_APP_KEY}
+  REVERB_APP_SECRET: ${REVERB_APP_SECRET:?set REVERB_APP_SECRET}
+  # Server-side publishing goes straight to the reverb container.
+  REVERB_HOST: reverb
+  REVERB_PORT: 8080
+  REVERB_SCHEME: http
+  REVERB_SERVER_HOST: 0.0.0.0
+  REVERB_SERVER_PORT: 8080
+  RENDERER_URL: http://renderer:3100
+  RENDERER_TOKEN: ${RENDERER_TOKEN:?set RENDERER_TOKEN}
+  RENDERER_TIMEOUT_MS: 20000
+  SERPAPI_KEY: ${SERPAPI_KEY:-}
+  BRAVE_SEARCH_KEY: ${BRAVE_SEARCH_KEY:-}
+  GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  SCRAPER_USER_AGENT: ${SCRAPER_USER_AGENT:-PriceLensBot/1.0 (+https://pricelens.example/bot)}
+  SCRAPER_DEFAULT_RPS_PER_DOMAIN: ${SCRAPER_DEFAULT_RPS_PER_DOMAIN:-0.5}
+  PRICELENS_METRICS_TOKEN: ${PRICELENS_METRICS_TOKEN:-}
+  PRICELENS_SELF_SIGNUP: ${PRICELENS_SELF_SIGNUP:-false}
+  PRICELENS_UI_URL: ${APP_URL:-http://localhost:8080}
+  PRICELENS_SSRF_ALLOW_HOSTS: ${PRICELENS_SSRF_ALLOW_HOSTS:-}
+  SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost:8080,localhost}
+  MAIL_MAILER: ${MAIL_MAILER:-log}
+  MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-noreply@pricelens.example}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: pricelens-api
+  SENTRY_LARAVEL_DSN: ${SENTRY_LARAVEL_DSN:-}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
+  PHP_OPCACHE_VALIDATE_TIMESTAMPS: 1
+
+x-api: &api
+  image: pricelens/api:${IMAGE_TAG:-dev}
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+  environment: *api-env
+  volumes:
+    - api-storage:/var/www/api/storage/app
+  depends_on:
+    mysql: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  nginx:
+    image: pricelens/nginx:${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on: [api, web, reverb]
+    restart: unless-stopped
+
+  api:
+    <<: *api
+
+  horizon:
+    <<: *api
+    command: ["php", "artisan", "horizon"]
+    stop_grace_period: 60s
+
+  scheduler:
+    <<: *api
+    command: ["php", "artisan", "schedule:work"]
+    deploy:
+      replicas: 1 # exactly one scheduler
+
+  reverb:
+    <<: *api
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
+
+  migrate:
+    <<: *api
+    command:
+      - sh
+      - -c
+      - php artisan migrate --force && php artisan db:seed --force && php artisan pricelens:partitions && (php artisan pricelens:fx:refresh || echo "FX refresh failed; the scheduler retries daily")
+    restart: "no"
+    profiles: ["tools"]
+
+  renderer:
+    image: pricelens/renderer:${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/renderer/Dockerfile
+    init: true # reaps stray Chromium processes
+    environment:
+      PORT: 3100
+      RENDERER_TOKEN: ${RENDERER_TOKEN:?set RENDERER_TOKEN}
+      BROWSER_INSTANCES: ${RENDERER_BROWSER_INSTANCES:-2}
+      CONTEXTS_PER_INSTANCE: ${RENDERER_CONTEXTS_PER_INSTANCE:-4}
+      DEFAULT_TIMEOUT_MS: 20000
+      RENDERER_BLOCK_PRIVATE: "true"
+      RENDERER_ALLOW_HOSTS: ${RENDERER_ALLOW_HOSTS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: pricelens-renderer
+    shm_size: 1gb
+    # Internal only: no published ports. The renderer blocks private/internal addresses for documents, redirect
+    # hops, subresources and websockets; a network-level egress policy is still recommended (DNS-rebinding TOCTOU).
+    restart: unless-stopped
+
+  web:
+    image: pricelens/web:${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+      args:
+        NEXT_PUBLIC_REVERB_HOST: ${PUBLIC_HOST:-localhost}
+        NEXT_PUBLIC_REVERB_KEY: ${REVERB_APP_KEY:?set REVERB_APP_KEY}
+        NEXT_PUBLIC_REVERB_PORT: ${HTTP_PORT:-8080}
+        NEXT_PUBLIC_REVERB_SCHEME: http
+    environment:
+      PRICELENS_API_URL: http://nginx/api/v1
+      PRICELENS_API_KEY: ${PRICELENS_API_KEY:-}
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: pricelens
+      MYSQL_USER: pricelens
+      MYSQL_PASSWORD: ${DB_PASSWORD:-pricelens}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DB_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  api-storage:
+  mysql-data:
+  redis-data:

@@ -1,0 +1,7 @@
+# Per-Dockerfile ignore (BuildKit): only ship what the renderer build needs.
+*
+!renderer/package.json
+!renderer/package-lock.json
+!renderer/tsconfig.json
+!renderer/tsconfig.build.json
+!renderer/src/**

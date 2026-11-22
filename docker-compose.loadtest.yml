@@ -1,0 +1,64 @@
+# Load-test overlay: a fixture farm of static shops + k6.
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml --profile loadtest run --rm k6
+# See load/README.md. Never use this overlay in production: it lets the scraper reach private IPs on *.fixture.test
+# (the API ignores PRICELENS_SSRF_ALLOW_HOSTS when APP_ENV=production anyway).
+
+x-loadtest-scraper-env: &loadtest-scraper-env
+  PRICELENS_SSRF_ALLOW_HOSTS: "*.fixture.test"
+  # The fixture farm is ours: lift the politeness defaults so the per-domain throttle doesn't dominate the numbers.
+  SCRAPER_DEFAULT_RPS_PER_DOMAIN: ${LOADTEST_RPS_PER_DOMAIN:-200}
+  SCRAPER_DEFAULT_DOMAIN_CONCURRENCY: ${LOADTEST_DOMAIN_CONCURRENCY:-50}
+  SCRAPER_CIRCUIT_FAILURES: ${LOADTEST_CIRCUIT_FAILURES:-1000}
+
+services:
+  fixture-farm:
+    image: pricelens/fixture-farm:${IMAGE_TAG:-dev}
+    build:
+      context: load/fixture-farm
+      args:
+        FIXTURE_SITES: 10
+    restart: unless-stopped
+    networks:
+      default:
+        # One alias per generated shop (python3 load/fixture-farm/generate.py --sites N --print-aliases).
+        aliases:
+          - shop-01.fixture.test
+          - shop-02.fixture.test
+          - shop-03.fixture.test
+          - shop-04.fixture.test
+          - shop-05.fixture.test
+          - shop-06.fixture.test
+          - shop-07.fixture.test
+          - shop-08.fixture.test
+          - shop-09.fixture.test
+          - shop-10.fixture.test
+
+  api:
+    environment: *loadtest-scraper-env
+    depends_on:
+      fixture-farm: { condition: service_started }
+  horizon:
+    environment: *loadtest-scraper-env
+    depends_on:
+      fixture-farm: { condition: service_started }
+
+  renderer:
+    environment:
+      RENDERER_ALLOW_HOSTS: "*.fixture.test"
+      RENDERER_BLOCK_PRIVATE: "true"
+
+  k6:
+    image: grafana/k6:1.3.0
+    profiles: ["loadtest"]
+    depends_on: [nginx, fixture-farm]
+    working_dir: /scripts
+    volumes:
+      - ./load/k6:/scripts:ro
+    environment:
+      API_URL: ${LOADTEST_API_URL:-http://nginx/api/v1}
+      API_KEY: ${LOADTEST_API_KEY:-}
+      SITES: ${LOADTEST_SITES:-shop-01.fixture.test,shop-02.fixture.test,shop-03.fixture.test,shop-04.fixture.test,shop-05.fixture.test,shop-06.fixture.test,shop-07.fixture.test,shop-08.fixture.test,shop-09.fixture.test,shop-10.fixture.test}
+      CATALOG_URL: ${LOADTEST_CATALOG_URL:-http://shop-01.fixture.test/catalog.json}
+      MAX_VUS: ${LOADTEST_MAX_VUS:-200}
+    command: ["run", "searches.js"]

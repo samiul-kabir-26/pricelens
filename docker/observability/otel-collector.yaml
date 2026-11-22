@@ -1,0 +1,67 @@
+# OpenTelemetry Collector for PriceLens traces (pricelens-api, pricelens-renderer export OTLP/HTTP to :4318).
+# Default: print spans with the debug exporter (`docker compose logs otel-collector`).
+# For a real trace store, uncomment one exporter below and add it to the traces pipeline.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+  # Spans carry tenant_id / search_id / domain / stage attributes (spec §17); drop anything that looks like PII.
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: enduser.id
+        action: delete
+
+exporters:
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # Grafana Tempo (add a `tempo` service, then a Tempo datasource in Grafana):
+  # otlphttp/tempo:
+  #   endpoint: http://tempo:4318
+  #   tls:
+  #     insecure: true
+
+  # Jaeger (jaegertracing/jaeger accepts OTLP natively):
+  # otlp/jaeger:
+  #   endpoint: jaeger:4317
+  #   tls:
+  #     insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, batch]
+      exporters: [debug] # e.g. [debug, otlphttp/tempo]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

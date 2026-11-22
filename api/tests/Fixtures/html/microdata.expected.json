@@ -1,0 +1,13 @@
+{
+  "url": "https://werkzeug.example.de/p/gsr-18v-55",
+  "method": "microdata",
+  "fields": {
+    "title": "Bosch GSR 18V-55 Cordless Drill",
+    "brand": "Bosch",
+    "gtin": "4053423228432",
+    "image_url": "https://werkzeug.example.de/images/drill.jpg",
+    "price": "149.00",
+    "currency": "EUR",
+    "availability": "http://schema.org/InStock"
+  }
+}
